@@ -1,7 +1,5 @@
 import os
 import re
-import json
-import zipfile
 import hashlib
 import time
 from collections import Counter
@@ -11,6 +9,7 @@ import chromadb
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
+import pypdf
 
 load_dotenv()
 
@@ -23,19 +22,6 @@ CHAT_MODEL = "gpt-4o-mini"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 def load_document_pages(path: str) -> list[tuple[int, str]]:
-    if zipfile.is_zipfile(path):
-        with zipfile.ZipFile(path) as z:
-            names = z.namelist()
-            if "manifest.json" in names:
-                manifest = json.loads(z.read("manifest.json").decode("utf-8"))
-                pages = sorted(manifest["pages"], key=lambda p: p["page_number"])
-                return [
-                    (p["page_number"], z.read(p["text"]["path"]).decode("utf-8"))
-                    for p in pages
-                ]
-        raise ValueError(f"zip 파일이지만 예상한 manifest.json 구조가 아닙니다: {path}")
-
-    import pypdf
     reader = pypdf.PdfReader(path)
     return [(i + 1, page.extract_text() or "") for i, page in enumerate(reader.pages)]
 
@@ -46,7 +32,6 @@ def load_lines_with_pages(path: str) -> list[tuple[int, str]]:
         for line in text.splitlines():
             lines.append((page_num, line))
     return lines
-
 
 CHAPTER_RE = re.compile(r"^제\d+장(?:의\d+)?\s+\S")
 
@@ -63,7 +48,6 @@ def split_parts(lines_with_pages: list[tuple[int, str]]) -> dict[str, list[tuple
         elif current:
             parts.setdefault(current, []).append((page_num, line))
     return parts
-
 
 ARTICLE_RE = re.compile(r"^제(\d+(?:조의\d+|조))\(([^)]+)\)")
 SECTION_RE = re.compile(r"^제\d+절\s+(.+)$")
@@ -120,7 +104,6 @@ def embed_cached(client: OpenAI, name: str, texts: list[str]) -> np.ndarray:
     np.save(path, vecs)
     return vecs
 
-
 @st.cache_resource(show_spinner="저작권법 조문을 불러오고 임베딩하는 중입니다...")
 def build_pipeline():
     client = OpenAI(api_key=os.getenv("api_key"))
@@ -157,13 +140,12 @@ def ask(client: OpenAI, collection, question: str):
     response = client.chat.completions.create(
         model=CHAT_MODEL,
         messages=[
-            {"role": "system", "content": "아래 저작권법 조문만 근거로 답변하세요. 그리고 항상 답변 끝에 근거(조항 번호, 페이지 등)을 명시하세요."},
+            {"role": "system", "content": "아래 저작권법 조문만 근거로 답변하세요. 항상 조문 번호와 해당 조문이 적혀있는 페이지를 함께 언급하세요."},
             {"role": "system", "content": "문서에 없는 내용은 '문서에서 확인되지 않습니다'라고 답변하세요."},
             {"role": "user", "content": f"조문:\n{context}\n\n질문: {question}"},
         ],
     )
     return response.choices[0].message.content, metadatas
-
 
 st.set_page_config(page_title="저작권법 Q&A", page_icon="⚖️")
 st.title("⚖️ 저작권법 Q&A")
