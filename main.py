@@ -13,7 +13,10 @@ import pypdf
 
 load_dotenv()
 
-PDF_PATH = r"C:\Users\201\Downloads\저작권법(법률)(제21336호)(20260811).pdf"
+PDF_PATH = [
+    r"C:\Users\201\Downloads\저작권법(법률)(제21336호)(20260811).pdf",
+    r"C:\Users\201\Downloads\관세법(법률)(제21858호)(20260811).pdf"
+]
 CACHE_DIR = "embedding_cache"
 DB_DIR = "ai_agent_db"
 EMBED_MODEL = "text-embedding-3-large"
@@ -104,14 +107,20 @@ def embed_cached(client: OpenAI, name: str, texts: list[str]) -> np.ndarray:
     np.save(path, vecs)
     return vecs
 
-@st.cache_resource(show_spinner="저작권법 조문을 불러오고 임베딩하는 중입니다...")
+@st.cache_resource(show_spinner="저작권법과 관세법의 조문을 불러오고 임베딩하는 중입니다...")
 def build_pipeline():
     client = OpenAI(api_key=os.getenv("api_key"))
 
-    lines_with_pages = load_lines_with_pages(PDF_PATH)
-    parts = split_parts(lines_with_pages)
-    records = [r for name, lp in parts.items() for r in article_records(lp, name)]
-    docs = [f"[{r['part']} | {r['page']}페이지] {r['article']} {r['text']}" for r in records]
+    records = []
+    for path in PDF_PATH:
+        doc_name = os.path.basename(path)          # 어느 법인지 구분용 (파일명)
+        lines_with_pages = load_lines_with_pages(path)
+        parts = split_parts(lines_with_pages)
+        for name, lp in parts.items():
+            for r in article_records(lp, name):
+                r["source"] = doc_name
+                records.append(r)
+    docs = [f"[{r['source']} | {r['part']} | {r['page']}페이지] {r['article']} {r['text']}" for r in records]
 
     chunk_embeddings = embed_cached(client, "records", docs)
 
@@ -123,7 +132,7 @@ def build_pipeline():
             ids=[f"chunk_{i}" for i in range(len(records))],
             documents=docs,
             embeddings=chunk_embeddings.tolist(),
-            metadatas=[{"part": r["part"], "chapter": r["chapter"], "article": r["article"], "page": r["page"]} for r in records],
+            metadatas=[{"part": r["part"], "chapter": r["chapter"], "article": r["article"], "page": r["page"], "source": r["source"]} for r in records],
         )
     else:
         collection = chroma_client.get_collection(collection_name)
@@ -140,16 +149,16 @@ def ask(client: OpenAI, collection, question: str):
     response = client.chat.completions.create(
         model=CHAT_MODEL,
         messages=[
-            {"role": "system", "content": "아래 저작권법 조문만 근거로 답변하세요. 항상 조문 번호와 해당 조문이 적혀있는 페이지를 함께 언급하세요."},
+            {"role": "system", "content": "아래 저작권법과 관세법 조문만 근거로 답변하세요. 항상 조문 번호와 해당 조문이 적혀있는 페이지를 함께 언급하세요."},
             {"role": "system", "content": "문서에 없는 내용은 '문서에서 확인되지 않습니다'라고 답변하세요."},
             {"role": "user", "content": f"조문:\n{context}\n\n질문: {question}"},
         ],
     )
     return response.choices[0].message.content, metadatas
 
-st.set_page_config(page_title="저작권법 Q&A", page_icon="⚖️")
-st.title("⚖️ 저작권법 Q&A")
-st.caption("저작권법 조문을 근거로만 답변하는 챗봇입니다.")
+st.set_page_config(page_title="저작권법 & 관세법 Q&A", page_icon="⚖️")
+st.title("저작권법 & 관세법 Q&A")
+st.caption("저작권법과 관세법 조문을 근거로만 답변하는 챗봇입니다.")
 
 client, collection, n_records = build_pipeline()
 st.sidebar.success(f"조문 {n_records}개 로드 완료")
@@ -166,7 +175,7 @@ for msg in st.session_state.messages:
                 for src in msg["sources"]:
                     st.markdown(f"- **{src['article']}** ({src['part']}, {src['page']}페이지)")
 
-question = st.chat_input("저작권법에 대해 물어보세요")
+question = st.chat_input("저작권법이나 관세법에 대해 물어보세요")
 if question:
     st.session_state.messages.append({"role": "user", "content": question})
     with st.chat_message("user"):
@@ -178,6 +187,6 @@ if question:
         st.markdown(answer)
         with st.expander("참고한 조문"):
             for src in sources:
-                st.markdown(f"- **{src['article']}** ({src['part']}, {src['page']}페이지)")
+                st.markdown(f"- **[{src['source']}] {src['article']}** ({src['part']}, {src['page']}페이지)")
 
     st.session_state.messages.append({"role": "assistant", "content": answer, "sources": sources})
